@@ -135,25 +135,40 @@ make_seasonal_average_model = function(df){
 predictions = data.frame()
 
 for(this_testing_month in testing_months){
-  this_subset_predictions = rodent_counts %>%
-    filter(project_month < this_testing_month) %>%
-    make_seasonal_average_model()
+  
   
   this_subset_testing_data = rodent_counts %>%
-    filter(project_month %in% this_testing_month:(this_testing_month+11)) %>%
-    left_join(this_subset_predictions, by='month')
+    filter(project_month %in% this_testing_month:(this_testing_month+11)) 
   
-  this_subset_testing_data$prediction = this_subset_testing_data$num_rodents + round(rnorm(12, mean=0, sd=50),0)
+  #Make a forecast using the seasonal average model
+  seasonal_avg_predictions = rodent_counts %>%
+    filter(project_month < this_testing_month) %>%
+    make_seasonal_average_model() %>%
+    right_join(this_subset_testing_data, by='month') %>%
+    mutate(model = 'season_avg')
+  
+  #A very good "model" which just adds errors to the observations
+  awesome_model_predictions = this_subset_testing_data %>%
+    mutate(prediction = num_rodents + round(rnorm(12, mean=0, sd=50),0)) %>%
+    rowwise() %>%
+    mutate(prediction = max(0, prediction)) %>%
+    mutate(model='awesome_model')
+  
+  #this_subset_testing_data$prediction = this_subset_testing_data$num_rodents + round(rnorm(12, mean=0, sd=50),0)
   #model = tsglm(this_subset_training_data$num_rodents, model=list(past_obs=1, past_mean=6), distr = 'nbinom')
   #this_subset_testing_data$prediction = predict(model, 12)$pred
   
-  this_subset_testing_data$initial_month = this_testing_month -1
+  seasonal_avg_predictions$initial_month = this_testing_month -1
+  awesome_model_predictions$initial_month = this_testing_month -1
   
   predictions = predictions %>%
-    bind_rows(this_subset_testing_data)
+    bind_rows(seasonal_avg_predictions, awesome_model_predictions)
+    
 }
 
-sqrt(mean(with(predictions, (num_rodents - prediction)^2)))
+predictions %>%
+  group_by(model) %>%
+  summarise(sqrt(mean((num_rodents - prediction)^2)))
 
 write_csv(predictions, model_output_file)
 
