@@ -8,9 +8,9 @@ library(tscount)
 
 model_output_file = 'results/portal_model_output.csv'
 
-years_to_use  = c(1990:2016)
+years_to_use  = c(1995:2016)
 testing_years = c(2000:2016)
-testing_months = 276:476
+testing_months = 276:467
 
 
 ########################################################################
@@ -18,7 +18,7 @@ testing_months = 276:476
 #The portalr package is made to deal specifically with this dataset.
 #This function will download the most up to date data into the 
 #current project working directory
-portalr::download_observations(base_folder = '.')
+#portalr::download_observations(base_folder = '.')
 
 ########################################################################
 ########################################################################
@@ -66,6 +66,9 @@ rodent_counts = rodent_counts %>%
 
 rodent_counts$project_month = with(rodent_counts, (year-1977)*12 + month-1)
 
+#Order matters for fitting the spline
+rodent_counts = arrange(rodent_counts, project_month)
+
 smoother = with(filter(rodent_counts, !is.na(num_rodents)), smooth.spline(x=project_month, y=num_rodents))
 
 rodent_counts$interpolated_num_rodents = predict(smoother, min(rodent_counts$project_month):max(rodent_counts$project_month))$y
@@ -110,6 +113,21 @@ rm(all_months, smoother)
 #   return(prior_ndvi)
 # }
 
+########################################################################
+# A naive model of mean monthly rodents using seasonal averages,
+# but weighted heavily toward the prior years
+
+make_seasonal_average_model = function(df){
+  last_years_weight = 0.4
+  
+  model_predictions = df %>%
+    group_by(month) %>%
+    mutate(weight = ifelse(year==max(year), last_years_weight, (1-last_years_weight)/11)) %>%
+    summarise(prediction = sum(num_rodents * weight)) %>%
+    ungroup()
+  return(model_predictions)
+}
+
 
 ########################################################################
 ########################################################################
@@ -117,18 +135,25 @@ rm(all_months, smoother)
 predictions = data.frame()
 
 for(this_testing_month in testing_months){
-  this_subset_training_data = rodent_counts %>%
-    filter(project_month < this_testing_month)
-  this_subset_testing_data = rodent_counts %>%
-    filter(project_month %in% this_testing_month:(this_testing_month+11))
-  model = tsglm(this_subset_training_data$num_rodents, model=list(past_obs=1, past_mean=6), distr = 'nbinom')
+  this_subset_predictions = rodent_counts %>%
+    filter(project_month < this_testing_month) %>%
+    make_seasonal_average_model()
   
-  this_subset_testing_data$prediction = predict(model, 12)$pred
+  this_subset_testing_data = rodent_counts %>%
+    filter(project_month %in% this_testing_month:(this_testing_month+11)) %>%
+    left_join(this_subset_predictions, by='month')
+  
+  this_subset_testing_data$prediction = this_subset_testing_data$num_rodents + round(rnorm(12, mean=0, sd=50),0)
+  #model = tsglm(this_subset_training_data$num_rodents, model=list(past_obs=1, past_mean=6), distr = 'nbinom')
+  #this_subset_testing_data$prediction = predict(model, 12)$pred
+  
   this_subset_testing_data$initial_month = this_testing_month -1
   
   predictions = predictions %>%
     bind_rows(this_subset_testing_data)
 }
+
+sqrt(mean(with(predictions, (num_rodents - prediction)^2)))
 
 write_csv(predictions, model_output_file)
 
