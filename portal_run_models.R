@@ -12,7 +12,7 @@ years_to_use  = c(1995:2016)
 testing_years = c(2000:2016)
 testing_months = 276:467
 
-
+species_of_interest = c('DM','DO','PP','PE','PB')
 ########################################################################
 ########################################################################
 #The portalr package is made to deal specifically with this dataset.
@@ -25,9 +25,10 @@ testing_months = 276:467
 
 rodent_counts = portalr::abundance(path='.', level='Site', unknowns = TRUE, incomplete = FALSE,
                                  shape='flat') %>%
-  group_by(period) %>%
+  group_by(period, species) %>%
   summarize(num_rodents = sum(abundance)) %>%
-  ungroup() 
+  ungroup() %>%
+  filter(species %in% species_of_interest)
 
 #There are ~24 species or rodents seen at the site. In the raw data above
 #species are only identified by a 2 letter code. This data.frame will associate
@@ -54,64 +55,48 @@ rodent_counts = rodent_counts %>%
 
 # 2 trappings in a single calendar month? Average the two into one
 rodent_counts = rodent_counts %>%
-  group_by(year, month) %>%
+  group_by(year, month, species) %>%
   summarise(num_rodents = as.integer(mean(num_rodents))) %>%
   ungroup()
   
 # Interpolate missing sampling periods with a spline smoother
 
 all_months = expand.grid(year=years_to_use, month=1:12)
+
+interpolate_missing_values = function(df){
+  #Use this data.frame of all months/years to make na values for missing ones. 
+  df = df %>%
+    right_join(all_months, by=c('year','month'))
+  
+  #Ensure there are no NA species values
+  df$species = unique(df$species)[1]
+  
+  #Use a continuous project_month variable, starting with 1 = the first sampling
+  #to do spline fitting
+  df$project_month = with(df, (year-1977)*12 + month-1)
+  
+  #Order matters for fitting the spline
+  df = arrange(df, project_month)
+  
+  smoother = with(filter(df, !is.na(num_rodents)), smooth.spline(x=project_month, y=num_rodents))
+  
+  df$interpolated_num_rodents = predict(smoother, min(df$project_month):max(df$project_month))$y
+  
+  df = df %>%
+    mutate(num_rodents = ifelse(is.na(num_rodents), interpolated_num_rodents, num_rodents)) %>%
+    mutate(num_rodents = as.integer(num_rodents)) %>%
+    select(-interpolated_num_rodents)
+  
+}
+
 rodent_counts = rodent_counts %>%
-  right_join(all_months, by=c('year','month'))
+  group_by(species) %>%
+  do(interpolate_missing_values(.))
 
-rodent_counts$project_month = with(rodent_counts, (year-1977)*12 + month-1)
 
-#Order matters for fitting the spline
-rodent_counts = arrange(rodent_counts, project_month)
 
-smoother = with(filter(rodent_counts, !is.na(num_rodents)), smooth.spline(x=project_month, y=num_rodents))
-
-rodent_counts$interpolated_num_rodents = predict(smoother, min(rodent_counts$project_month):max(rodent_counts$project_month))$y
-
-rodent_counts = rodent_counts %>%
-  mutate(num_rodents = ifelse(is.na(num_rodents), interpolated_num_rodents, num_rodents)) %>%
-  mutate(num_rodents = as.integer(num_rodents)) %>%
-  select(-interpolated_num_rodents)
 
 rm(all_months, smoother)
-########################################################################
-########################################################################
-#Clean and compile the precipitaiton data into precip at different lags. 
-
-# ndvi_data = portalr::weather(level = 'Monthly', path='.') %>%
-#   select(year, month, NDVI)
-#   left_join(period_months, by=c('year','month')) %>%
-#   ungroup()
-
-################################################################
-# 
-# #This function will, for a given period  number, extract the  ndvi
-# #records from the prior months (default is 6)
-# get_prior_months_precip = function(num_months=6, period){
-#   this_period_row_number = which(ndvi_data$period==period)
-#   if(is.na(this_period_row_number) | length(this_period_row_number)!=1 ){
-#     return(NA)
-#   }
-#   
-#   starting_value = this_period_row_number - num_months
-#   ending_value   = this_period_row_number - 1
-#   prior_ndvi = ndvi_data[starting_value:ending_value,]
-#   
-#   #Fill in any missing precip values with the average from this
-#   #subset
-#   prior_ndvi$precipitation[is.na(prior_ndvi$precipitation)] = mean(prior_ndvi$precipitation, na.rm=T)
-#   
-#   #Return only the precip data with oen other column of the prior period identifier
-#   prior_ndvi = select(prior_ndvi, precipitation)
-#   prior_ndvi$months_prior = paste0('months_prior_',num_months:1)
-#   
-#   return(prior_ndvi)
-# }
 
 ########################################################################
 # A naive model of mean monthly rodents using seasonal averages,
@@ -135,35 +120,43 @@ make_seasonal_average_model = function(df){
 predictions = data.frame()
 
 for(this_testing_month in testing_months){
-  
-  
-  this_subset_testing_data = rodent_counts %>%
-    filter(project_month %in% this_testing_month:(this_testing_month+11)) 
-  
-  #Make a forecast using the seasonal average model
-  seasonal_avg_predictions = rodent_counts %>%
-    filter(project_month < this_testing_month) %>%
-    make_seasonal_average_model() %>%
-    right_join(this_subset_testing_data, by='month') %>%
-    mutate(model = 'season_avg')
-  
-  #A very good "model" which just adds errors to the observations
-  awesome_model_predictions = this_subset_testing_data %>%
-    mutate(prediction = num_rodents + round(rnorm(12, mean=0, sd=50),0)) %>%
-    rowwise() %>%
-    mutate(prediction = max(0, prediction)) %>%
-    mutate(model='awesome_model')
-  
-  #this_subset_testing_data$prediction = this_subset_testing_data$num_rodents + round(rnorm(12, mean=0, sd=50),0)
-  #model = tsglm(this_subset_training_data$num_rodents, model=list(past_obs=1, past_mean=6), distr = 'nbinom')
-  #this_subset_testing_data$prediction = predict(model, 12)$pred
-  
-  seasonal_avg_predictions$initial_month = this_testing_month -1
-  awesome_model_predictions$initial_month = this_testing_month -1
-  
-  predictions = predictions %>%
-    bind_rows(seasonal_avg_predictions, awesome_model_predictions)
+  for(this_species in species_of_interest){
     
+    this_subset_testing_data = rodent_counts %>%
+      filter(project_month %in% this_testing_month:(this_testing_month+11), species==this_species) 
+    
+    this_subset_training_data = rodent_counts %>%
+      filter(project_month < this_testing_month, species==this_species)
+    
+    #Make a forecast using the seasonal average model
+    seasonal_avg_predictions = this_subset_training_data %>%
+      make_seasonal_average_model() %>%
+      right_join(this_subset_testing_data, by='month') %>%
+      mutate(model = 'season_avg')
+    
+    #A very good "model" which just adds errors to the observations
+    awesome_model_predictions = this_subset_testing_data %>%
+      mutate(prediction = num_rodents + round(rnorm(12, mean=0, sd=50),0)) %>%
+      rowwise() %>%
+      mutate(prediction = max(0, prediction)) %>%
+      mutate(model='awesome_model')
+    
+    #this_subset_testing_data$prediction = this_subset_testing_data$num_rodents + round(rnorm(12, mean=0, sd=50),0)
+    model = tsglm(this_subset_training_data$num_rodents, model=list(past_obs=1, past_mean=6), distr = 'nbinom')
+    #this_subset_testing_data$prediction = predict(model, 12)$pred
+    tsglm_model_prediction = this_subset_testing_data %>%
+      mutate(prediction = predict(model, 12)$pred) %>%
+      mutate(model='tsglm')
+    
+    
+    seasonal_avg_predictions$initial_month = this_testing_month -1
+    awesome_model_predictions$initial_month = this_testing_month -1
+    tsglm_model_prediction$initial_month = this_testing_month -1
+    
+    predictions = predictions %>%
+      bind_rows(seasonal_avg_predictions, awesome_model_predictions, tsglm_model_prediction)
+    
+  }
 }
 
 predictions %>%
