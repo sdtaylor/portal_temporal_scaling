@@ -121,6 +121,8 @@ for(this_species in unique(predictions$species)){
       mutate(predicted_binary = max(predicted_binary)) %>%
       ungroup()
     
+    
+    
     smallest_grain_data = scaled_predictions %>%
       filter(temporal_scale == min(temporal_scales))
     
@@ -136,6 +138,8 @@ for(this_species in unique(predictions$species)){
       for(this_temporal_scale in temporal_scales){
         this_scale_data = scaled_predictions %>%
           filter(temporal_scale == this_temporal_scale)
+        
+        
         
         this_scale_expense = calculate_expense(this_scale_data, treatment_cost = treatment_cost, 
                                             loss_cost = this_loss_cost, expense_type='forecast')
@@ -155,7 +159,7 @@ for(this_species in unique(predictions$species)){
 cost_loss_values$value = with(cost_loss_values, (expense_max - expense_forecast)/(expense_max - expense_perfect))
 
 
-ggplot(filter(cost_loss_values, value>0), aes(x=a, y=value, group=as.factor(temporal_scale), color=as.factor(temporal_scale))) +
+portal_cost_loss_plot = ggplot(filter(cost_loss_values, value>0), aes(x=a, y=value, group=as.factor(temporal_scale), color=as.factor(temporal_scale))) +
   geom_line(size=1.5) + 
   ylim(0,1) +
   facet_grid(species~threshold) + 
@@ -173,3 +177,6 @@ ggplot(filter(cost_loss_values, value>0), aes(x=a, y=value, group=as.factor(temp
   labs(title = "Portal Cost Loss Analysis",
        color = 'Temporal Grain',
        x='a = C/L', y='Value')
+
+ggsave('portal_cost_loss.png', portal_cost_loss_plot, width=40, height=30, units='cm')
+
