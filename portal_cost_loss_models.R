@@ -6,33 +6,12 @@ library(tidyverse)
 
 temporal_scales = c(1,2,4)
 
-# upper_threshold = 1000
-# lower_threshold = 10
-
 population_thresholds = c(5,10,20,40)
 
 predictions = read_csv('results/portal_model_output.csv') %>%
   filter(model %in% c('tsglm'))
 temporal_model_sets = read.csv('temporal_model_sets.csv')
 
-
-#x = predictions %>% gather(value_type, value, num_rodents, prediction)
-#ggplot(x, aes(x=project_month, y=value, group=value_type, color=value_type)) + geom_line() + facet_wrap(~initial_month)
-
-#A lead time vs error graph
-# predictions$lead_time = with(predictions, project_month - initial_month)
-# errors = predictions %>%
-#   group_by(lead_time, model) %>%
-#   summarise(rmse = sqrt(mean((prediction - num_rodents)^2))) %>%
-#   ungroup()
-# ggplot(errors, aes(x=lead_time, y=rmse, color=model)) + geom_line()
-
-# ggplot(predictions, aes(x=project_month, y=prediction, group=initial_month, color=initial_month)) +
-#  geom_line() +
-#  #geom_hline(yintercept = upper_threshold, linetype=2) +
-#  geom_hline(yintercept = lower_threshold, linetype=2) +
-#  geom_line(aes(x=project_month, y=num_rodents), color='red', inherit.aes = FALSE) +
-#  facet_wrap(species~model, ncol=2, scales='free_y')
 
 #Use replicate_month to order the timeseries within each forecast replicate
 predictions = predictions %>%
@@ -42,19 +21,34 @@ predictions = predictions %>%
   ungroup() %>%
   select(-month, -year)
 
+###########################################
+# Calculate predictions for each grain size for later comparison
 
+all_scaled_predictions=data.frame()
+for(this_species in unique(predictions$species)){
+  for(this_threshold in population_thresholds){
+    # Convert to binary for this species and threshold
+    predictions_binary = predictions %>%
+      filter(species==this_species) %>%
+      mutate(observed_binary = (num_rodents < this_threshold)*1,
+             predicted_binary= (prediction < this_threshold)*1) 
 
+    # Insert preditions for all possible scales
+    scaled_predictions = temporal_model_sets %>%
+      left_join(predictions_binary, by='replicate_month') %>%
+      group_by(model, initial_month, temporal_scale, temporal_cell_id) %>%
+      mutate(predicted_binary = max(predicted_binary)) %>%
+      ungroup()
+    
+    # Save the raw predictions for comparison later
+    all_scaled_predictions = all_scaled_predictions %>%
+      bind_rows(scaled_predictions)
+  }
+}
 
-# predictions_binary = predictions %>%
-#     mutate(observed_binary = (num_rodents < upper_threshold & num_rodents > lower_threshold)*1,
-#           predicted_binary= (prediction < upper_threshold & prediction > lower_threshold)*1) %>%
-#   # mutate(observed_binary = ( num_rodents > lower_threshold)*1,
-#   #       predicted_binary= ( prediction > lower_threshold)*1) %>%
-#   select(initial_month, replicate_month, observed_binary, predicted_binary, model)
-
+write_csv(all_scaled_predictions, 'results/portal_scaled_predictions.csv')
 
 ###########################################
-
 
 #The per month 
 treatment_cost = 10
@@ -95,9 +89,6 @@ calculate_expense = function(df, treatment_cost, loss_cost, expense_type){
     distinct() %>%
     nrow()
   
-  #total_monthly_replicates = total_replicates * temporal_scale
-  #print(paste(total_monthly_replicates))
-  
   average_per_month_cost = total_cost / total_replicates
   return(average_per_month_cost)  
 }
@@ -120,8 +111,6 @@ for(this_species in unique(predictions$species)){
       group_by(model, initial_month, temporal_scale, temporal_cell_id) %>%
       mutate(predicted_binary = max(predicted_binary)) %>%
       ungroup()
-    
-    
     
     smallest_grain_data = scaled_predictions %>%
       filter(temporal_scale == min(temporal_scales))
@@ -159,24 +148,4 @@ for(this_species in unique(predictions$species)){
 cost_loss_values$value = with(cost_loss_values, (expense_max - expense_forecast)/(expense_max - expense_perfect))
 
 
-portal_cost_loss_plot = ggplot(filter(cost_loss_values, value>0), aes(x=a, y=value, group=as.factor(temporal_scale), color=as.factor(temporal_scale))) +
-  geom_line(size=1.5) + 
-  ylim(0,1) +
-  facet_grid(species~threshold) + 
-  theme_bw() +
-  theme(plot.title = element_text(size = 30),
-        axis.text = element_text(size = 20),
-        axis.title = element_text(size = 22),
-        legend.text = element_text(size = 15), 
-        legend.title = element_text(size = 20),
-        strip.text.x=element_text(size=22),
-        strip.text.y=element_text(size=22),
-        legend.position = "bottom", 
-        legend.direction = "horizontal",
-        legend.key.width = unit(15, units = 'mm')) +
-  labs(title = "Portal Cost Loss Analysis",
-       color = 'Temporal Grain',
-       x='a = C/L', y='Value')
-
-ggsave('portal_cost_loss.png', portal_cost_loss_plot, width=40, height=30, units='cm')
-
+write_csv(cost_loss_values, 'results/portal_cost_loss_values.csv')
